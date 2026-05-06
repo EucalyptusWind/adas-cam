@@ -1,0 +1,1101 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>ADAS Dashcam</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tensorflow/4.15.0/tf.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --hud-green: #00ff88;
+    --hud-red: #ff3355;
+    --hud-yellow: #ffcc00;
+    --hud-blue: #00cfff;
+    --hud-orange: #ff8800;
+    --bg: #050a0f;
+    --panel: rgba(5,15,25,0.85);
+    --border: rgba(0,255,136,0.2);
+    --font-mono: 'Share Tech Mono', monospace;
+    --font-ui: 'Rajdhani', sans-serif;
+  }
+
+- { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+background: var(–bg);
+color: var(–hud-green);
+font-family: var(–font-mono);
+overflow: hidden;
+height: 100vh;
+width: 100vw;
+touch-action: none;
+}
+
+#app {
+position: relative;
+width: 100vw;
+height: 100vh;
+display: flex;
+flex-direction: column;
+}
+
+/* ── CAMERA LAYER ── */
+#videoContainer {
+position: absolute;
+inset: 0;
+background: #000;
+}
+
+#video {
+width: 100%;
+height: 100%;
+object-fit: cover;
+display: block;
+}
+
+#canvas {
+position: absolute;
+inset: 0;
+width: 100%;
+height: 100%;
+pointer-events: none;
+}
+
+/* ── SCANLINE EFFECT ── */
+#scanlines {
+position: absolute;
+inset: 0;
+background: repeating-linear-gradient(
+0deg,
+transparent,
+transparent 2px,
+rgba(0,0,0,0.08) 2px,
+rgba(0,0,0,0.08) 4px
+);
+pointer-events: none;
+z-index: 10;
+}
+
+/* ── CORNER BRACKETS ── */
+.corner {
+position: absolute;
+width: 28px;
+height: 28px;
+z-index: 20;
+pointer-events: none;
+}
+.corner::before, .corner::after {
+content: ‘’;
+position: absolute;
+background: var(–hud-green);
+box-shadow: 0 0 6px var(–hud-green);
+}
+.corner::before { width: 100%; height: 2px; top: 0; left: 0; }
+.corner::after  { width: 2px; height: 100%; top: 0; left: 0; }
+.corner.tl { top: 12px; left: 12px; }
+.corner.tr { top: 12px; right: 12px; transform: scaleX(-1); }
+.corner.bl { bottom: 12px; left: 12px; transform: scaleY(-1); }
+.corner.br { bottom: 12px; right: 12px; transform: scale(-1); }
+
+/* ── TOP HUD BAR ── */
+#topBar {
+position: absolute;
+top: 0; left: 0; right: 0;
+z-index: 30;
+display: flex;
+align-items: center;
+justify-content: space-between;
+padding: 14px 16px 10px;
+background: linear-gradient(to bottom, rgba(5,10,15,0.9) 0%, transparent 100%);
+}
+
+.logo {
+font-family: var(–font-ui);
+font-weight: 700;
+font-size: 18px;
+letter-spacing: 4px;
+color: var(–hud-green);
+text-shadow: 0 0 12px var(–hud-green);
+}
+.logo span { color: var(–hud-blue); }
+
+#clock {
+font-size: 13px;
+color: rgba(0,255,136,0.7);
+letter-spacing: 2px;
+}
+
+#statusDot {
+width: 8px; height: 8px;
+border-radius: 50%;
+background: var(–hud-red);
+box-shadow: 0 0 8px var(–hud-red);
+animation: blink 1s infinite;
+}
+#statusDot.active { background: var(–hud-green); box-shadow: 0 0 8px var(–hud-green); animation: none; }
+
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
+
+/* ── SPEED DISPLAY ── */
+#speedBlock {
+position: absolute;
+bottom: 100px;
+left: 16px;
+z-index: 30;
+text-align: center;
+}
+
+#speedVal {
+font-family: var(–font-ui);
+font-size: 64px;
+font-weight: 700;
+line-height: 1;
+color: var(–hud-green);
+text-shadow: 0 0 20px var(–hud-green), 0 0 40px rgba(0,255,136,0.3);
+transition: color 0.3s;
+}
+#speedVal.warn { color: var(–hud-yellow); text-shadow: 0 0 20px var(–hud-yellow); }
+#speedVal.danger { color: var(–hud-red); text-shadow: 0 0 20px var(–hud-red); }
+
+#speedUnit {
+font-size: 11px;
+letter-spacing: 3px;
+color: rgba(0,255,136,0.5);
+margin-top: 2px;
+}
+
+/* ── RIGHT PANEL ── */
+#rightPanel {
+position: absolute;
+top: 60px;
+right: 12px;
+z-index: 30;
+display: flex;
+flex-direction: column;
+gap: 8px;
+width: 130px;
+}
+
+.stat-card {
+background: var(–panel);
+border: 1px solid var(–border);
+border-left: 2px solid var(–hud-green);
+padding: 7px 10px;
+backdrop-filter: blur(8px);
+}
+
+.stat-label {
+font-size: 9px;
+letter-spacing: 2px;
+color: rgba(0,255,136,0.45);
+text-transform: uppercase;
+margin-bottom: 2px;
+}
+
+.stat-value {
+font-family: var(–font-ui);
+font-size: 18px;
+font-weight: 600;
+color: var(–hud-green);
+text-shadow: 0 0 8px rgba(0,255,136,0.4);
+}
+
+.stat-value.alert { color: var(–hud-red); text-shadow: 0 0 8px rgba(255,51,85,0.5); }
+.stat-value.warn  { color: var(–hud-yellow); }
+
+/* ── DETECTION FEED ── */
+#detectionFeed {
+position: absolute;
+bottom: 100px;
+right: 12px;
+z-index: 30;
+width: 140px;
+display: flex;
+flex-direction: column;
+gap: 4px;
+}
+
+.det-item {
+background: var(–panel);
+border: 1px solid var(–border);
+padding: 5px 8px;
+font-size: 11px;
+display: flex;
+justify-content: space-between;
+align-items: center;
+backdrop-filter: blur(6px);
+animation: fadeSlide 0.3s ease;
+}
+@keyframes fadeSlide { from { opacity:0; transform:translateX(10px); } to { opacity:1; transform:translateX(0); } }
+
+.det-label { color: rgba(0,255,136,0.8); }
+.det-conf {
+font-size: 10px;
+padding: 1px 5px;
+border-radius: 2px;
+background: rgba(0,255,136,0.1);
+color: var(–hud-green);
+}
+.det-conf.car    { background: rgba(0,207,255,0.15); color: var(–hud-blue); }
+.det-conf.light  { background: rgba(255,204,0,0.15); color: var(–hud-yellow); }
+.det-conf.sign   { background: rgba(255,136,0,0.15); color: var(–hud-orange); }
+.det-conf.person { background: rgba(255,51,85,0.15); color: var(–hud-red); }
+
+/* ── BOTTOM BAR ── */
+#bottomBar {
+position: absolute;
+bottom: 0; left: 0; right: 0;
+z-index: 30;
+background: linear-gradient(to top, rgba(5,10,15,0.95) 0%, transparent 100%);
+padding: 12px 16px 20px;
+display: flex;
+align-items: center;
+justify-content: space-between;
+gap: 10px;
+}
+
+#startBtn {
+flex: 1;
+background: transparent;
+border: 1px solid var(–hud-green);
+color: var(–hud-green);
+font-family: var(–font-mono);
+font-size: 13px;
+letter-spacing: 2px;
+padding: 12px;
+cursor: pointer;
+text-transform: uppercase;
+box-shadow: 0 0 12px rgba(0,255,136,0.15), inset 0 0 12px rgba(0,255,136,0.05);
+transition: all 0.2s;
+-webkit-tap-highlight-color: transparent;
+}
+#startBtn:active { background: rgba(0,255,136,0.1); box-shadow: 0 0 20px rgba(0,255,136,0.3); }
+#startBtn.running { border-color: var(–hud-red); color: var(–hud-red); box-shadow: 0 0 12px rgba(255,51,85,0.2); }
+
+#fpsCounter {
+font-size: 11px;
+color: rgba(0,255,136,0.4);
+letter-spacing: 1px;
+min-width: 60px;
+text-align: right;
+}
+
+/* ── SPLASH / LOADING ── */
+#splash {
+position: absolute;
+inset: 0;
+z-index: 100;
+background: var(–bg);
+display: flex;
+flex-direction: column;
+align-items: center;
+justify-content: center;
+gap: 24px;
+transition: opacity 0.6s;
+}
+#splash.hidden { opacity: 0; pointer-events: none; }
+
+.splash-title {
+font-family: var(–font-ui);
+font-size: 32px;
+font-weight: 700;
+letter-spacing: 8px;
+color: var(–hud-green);
+text-shadow: 0 0 30px var(–hud-green);
+}
+.splash-title span { color: var(–hud-blue); }
+
+.splash-sub {
+font-size: 11px;
+letter-spacing: 3px;
+color: rgba(0,255,136,0.4);
+}
+
+#loadBar {
+width: 220px;
+height: 2px;
+background: rgba(0,255,136,0.1);
+position: relative;
+overflow: hidden;
+}
+#loadFill {
+height: 100%;
+background: var(–hud-green);
+box-shadow: 0 0 8px var(–hud-green);
+width: 0%;
+transition: width 0.4s ease;
+}
+
+#loadMsg {
+font-size: 11px;
+color: rgba(0,255,136,0.5);
+letter-spacing: 2px;
+min-height: 16px;
+text-align: center;
+}
+
+/* ── ALERT OVERLAY ── */
+#alertOverlay {
+position: absolute;
+top: 50%;
+left: 50%;
+transform: translate(-50%, -50%);
+z-index: 40;
+background: rgba(255,51,85,0.1);
+border: 1px solid var(–hud-red);
+padding: 10px 20px;
+font-family: var(–font-ui);
+font-size: 14px;
+font-weight: 700;
+letter-spacing: 3px;
+color: var(–hud-red);
+text-shadow: 0 0 10px var(–hud-red);
+display: none;
+backdrop-filter: blur(4px);
+animation: pulse 0.5s infinite alternate;
+}
+@keyframes pulse { from { opacity:0.7; } to { opacity:1; } }
+
+/* ── TRAFFIC LIGHT INDICATOR ── */
+#tlIndicator {
+position: absolute;
+top: 60px;
+left: 16px;
+z-index: 30;
+display: flex;
+flex-direction: column;
+gap: 6px;
+align-items: center;
+background: var(–panel);
+border: 1px solid var(–border);
+padding: 10px 8px;
+backdrop-filter: blur(8px);
+}
+
+.tl-dot {
+width: 18px; height: 18px;
+border-radius: 50%;
+border: 1px solid rgba(255,255,255,0.1);
+transition: all 0.3s;
+}
+.tl-dot.r { background: rgba(255,51,85,0.15); }
+.tl-dot.y { background: rgba(255,204,0,0.15); }
+.tl-dot.g { background: rgba(0,255,136,0.15); }
+.tl-dot.r.active { background: var(–hud-red); box-shadow: 0 0 12px var(–hud-red); }
+.tl-dot.y.active { background: var(–hud-yellow); box-shadow: 0 0 12px var(–hud-yellow); }
+.tl-dot.g.active { background: var(–hud-green); box-shadow: 0 0 12px var(–hud-green); }
+
+/* ── LANE LINES ── */
+#laneCanvas {
+position: absolute;
+inset: 0;
+width: 100%;
+height: 100%;
+pointer-events: none;
+z-index: 9;
+}
+</style>
+
+</head>
+<body>
+<div id="app">
+
+  <!-- Camera -->
+
+  <div id="videoContainer">
+    <video id="video" autoplay muted playsinline></video>
+    <canvas id="laneCanvas"></canvas>
+    <canvas id="canvas"></canvas>
+  </div>
+
+  <!-- Overlay effects -->
+
+  <div id="scanlines"></div>
+
+  <!-- Corner brackets -->
+
+  <div class="corner tl"></div>
+  <div class="corner tr"></div>
+  <div class="corner bl"></div>
+  <div class="corner br"></div>
+
+  <!-- Top bar -->
+
+  <div id="topBar">
+    <div class="logo">ADAS<span>CAM</span></div>
+    <div id="clock">--:--:--</div>
+    <div id="statusDot"></div>
+  </div>
+
+  <!-- Traffic light indicator -->
+
+  <div id="tlIndicator">
+    <div class="tl-dot r" id="tlR"></div>
+    <div class="tl-dot y" id="tlY"></div>
+    <div class="tl-dot g" id="tlG"></div>
+  </div>
+
+  <!-- Speed -->
+
+  <div id="speedBlock">
+    <div id="speedVal">0</div>
+    <div id="speedUnit">KM/H EST.</div>
+  </div>
+
+  <!-- Right stats -->
+
+  <div id="rightPanel">
+    <div class="stat-card">
+      <div class="stat-label">Vehicles</div>
+      <div class="stat-value" id="statVehicles">0</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Persons</div>
+      <div class="stat-value" id="statPersons">0</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Signs</div>
+      <div class="stat-value" id="statSigns">0</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Lane</div>
+      <div class="stat-value" id="statLane">--</div>
+    </div>
+  </div>
+
+  <!-- Detection feed -->
+
+  <div id="detectionFeed"></div>
+
+  <!-- Alert -->
+
+  <div id="alertOverlay" id="alertOverlay">⚠ COLLISION RISK</div>
+
+  <!-- Bottom bar -->
+
+  <div id="bottomBar">
+    <button id="startBtn" onclick="toggleDetection()">▶ START ADAS</button>
+    <div id="fpsCounter">-- FPS</div>
+  </div>
+
+  <!-- Splash -->
+
+  <div id="splash">
+    <div class="splash-title">ADAS<span>CAM</span></div>
+    <div class="splash-sub">ADVANCED DRIVER ASSISTANCE SYSTEM</div>
+    <div id="loadBar"><div id="loadFill"></div></div>
+    <div id="loadMsg">INITIALIZING...</div>
+  </div>
+
+</div>
+
+<script>
+// ─────────────────────────────────────────────
+//  STATE
+// ─────────────────────────────────────────────
+const state = {
+  running: false,
+  model: null,
+  modelLoaded: false,
+  animFrame: null,
+  lastTime: 0,
+  fps: 0,
+  frameCount: 0,
+  speedKmh: 0,
+  // Speed estimation via optical flow
+  prevGray: null,
+  motionHistory: [],
+  // Detection history for feed
+  detections: [],
+  // Traffic light state
+  trafficLight: null,
+  // Alert state
+  alertActive: false,
+};
+
+// COCO class mapping — relevant for ADAS
+const CLASSES = {
+  0:  { label:'Person',      cat:'person',  color:'#ff3355' },
+  1:  { label:'Bicycle',     cat:'vehicle', color:'#00cfff' },
+  2:  { label:'Car',         cat:'vehicle', color:'#00cfff' },
+  3:  { label:'Motorcycle',  cat:'vehicle', color:'#00cfff' },
+  5:  { label:'Bus',         cat:'vehicle', color:'#00cfff' },
+  7:  { label:'Truck',       cat:'vehicle', color:'#00cfff' },
+  9:  { label:'Traffic Light',cat:'light',  color:'#ffcc00' },
+  11: { label:'Stop Sign',   cat:'sign',    color:'#ff8800' },
+  12: { label:'Parking Sign',cat:'sign',    color:'#ff8800' },
+  13: { label:'Bench',       cat:'other',   color:'#888' },
+};
+
+const RELEVANT = new Set(Object.keys(CLASSES).map(Number));
+
+// ─────────────────────────────────────────────
+//  DOM REFS
+// ─────────────────────────────────────────────
+const video      = document.getElementById('video');
+const canvas     = document.getElementById('canvas');
+const laneCanvas = document.getElementById('laneCanvas');
+const ctx        = canvas.getContext('2d');
+const laneCtx    = laneCanvas.getContext('2d');
+const splash     = document.getElementById('splash');
+const loadFill   = document.getElementById('loadFill');
+const loadMsg    = document.getElementById('loadMsg');
+const startBtn   = document.getElementById('startBtn');
+const fpsCounter = document.getElementById('fpsCounter');
+const speedVal   = document.getElementById('speedVal');
+const statVehicles = document.getElementById('statVehicles');
+const statPersons  = document.getElementById('statPersons');
+const statSigns    = document.getElementById('statSigns');
+const statLane     = document.getElementById('statLane');
+const detFeed      = document.getElementById('detectionFeed');
+const alertOverlay = document.getElementById('alertOverlay');
+const clockEl      = document.getElementById('clock');
+const statusDot    = document.getElementById('statusDot');
+const tlR = document.getElementById('tlR');
+const tlY = document.getElementById('tlY');
+const tlG = document.getElementById('tlG');
+
+// ─────────────────────────────────────────────
+//  CLOCK
+// ─────────────────────────────────────────────
+function updateClock() {
+  const now = new Date();
+  clockEl.textContent = now.toTimeString().slice(0,8);
+}
+setInterval(updateClock, 1000);
+updateClock();
+
+// ─────────────────────────────────────────────
+//  LOAD MODEL
+// ─────────────────────────────────────────────
+async function loadModel() {
+  setLoad(5, 'LOADING TENSORFLOW...');
+  await tf.ready();
+  setLoad(20, 'FETCHING COCO-SSD MODEL...');
+  // We load COCO-SSD via CDN script, but tf.loadGraphModel is used for custom
+  // Here we use the @tensorflow-models/coco-ssd approach via CDN
+  return new Promise((resolve) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/tensorflow/4.15.0/tf.min.js';
+    // Load coco-ssd from CDN
+    const s2 = document.createElement('script');
+    s2.src = 'https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js';
+    s2.onload = async () => {
+      setLoad(60, 'COMPILING MODEL...');
+      try {
+        const model = await cocoSsd.load({ base: 'mobilenet_v2' });
+        setLoad(90, 'WARMING UP...');
+        // Warm up with dummy tensor
+        const dummy = tf.zeros([1, 300, 300, 3]);
+        await model.detect(dummy);
+        dummy.dispose();
+        setLoad(100, 'SYSTEM READY');
+        resolve(model);
+      } catch(e) {
+        setLoad(100, 'MODEL LOAD ERROR - CHECK CONNECTION');
+        resolve(null);
+      }
+    };
+    s2.onerror = () => { setLoad(100,'FAILED TO LOAD MODEL'); resolve(null); };
+    document.head.appendChild(s2);
+  });
+}
+
+function setLoad(pct, msg) {
+  loadFill.style.width = pct + '%';
+  loadMsg.textContent = msg;
+}
+
+// ─────────────────────────────────────────────
+//  CAMERA
+// ─────────────────────────────────────────────
+async function startCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: 'environment',
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
+      },
+      audio: false
+    });
+    video.srcObject = stream;
+    await new Promise(r => video.onloadedmetadata = r);
+    video.play();
+    resizeCanvases();
+  } catch(e) {
+    loadMsg.textContent = 'CAMERA ACCESS DENIED';
+  }
+}
+
+function resizeCanvases() {
+  canvas.width  = video.videoWidth  || window.innerWidth;
+  canvas.height = video.videoHeight || window.innerHeight;
+  laneCanvas.width  = canvas.width;
+  laneCanvas.height = canvas.height;
+}
+
+window.addEventListener('resize', resizeCanvases);
+
+// ─────────────────────────────────────────────
+//  INIT
+// ─────────────────────────────────────────────
+async function init() {
+  await startCamera();
+  setLoad(10, 'CAMERA OK — LOADING MODEL...');
+  state.model = await loadModel();
+  state.modelLoaded = !!state.model;
+
+  setTimeout(() => {
+    splash.classList.add('hidden');
+  }, 600);
+}
+
+init();
+
+// ─────────────────────────────────────────────
+//  TOGGLE DETECTION
+// ─────────────────────────────────────────────
+function toggleDetection() {
+  if (!state.modelLoaded) {
+    loadMsg.textContent = 'MODEL NOT READY';
+    return;
+  }
+  state.running = !state.running;
+  if (state.running) {
+    startBtn.textContent = '■ STOP ADAS';
+    startBtn.classList.add('running');
+    statusDot.classList.add('active');
+    state.lastTime = performance.now();
+    detectLoop();
+  } else {
+    startBtn.textContent = '▶ START ADAS';
+    startBtn.classList.remove('running');
+    statusDot.classList.remove('active');
+    if (state.animFrame) cancelAnimationFrame(state.animFrame);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    laneCtx.clearRect(0, 0, laneCanvas.width, laneCanvas.height);
+    resetStats();
+  }
+}
+
+function resetStats() {
+  speedVal.textContent = '0';
+  statVehicles.textContent = '0';
+  statPersons.textContent  = '0';
+  statSigns.textContent    = '0';
+  statLane.textContent     = '--';
+  detFeed.innerHTML = '';
+  setTrafficLight(null);
+  alertOverlay.style.display = 'none';
+}
+
+// ─────────────────────────────────────────────
+//  DETECT LOOP
+// ─────────────────────────────────────────────
+async function detectLoop() {
+  if (!state.running) return;
+
+  const now = performance.now();
+  const dt  = now - state.lastTime;
+  state.lastTime = now;
+  state.fps = Math.round(1000 / dt);
+  fpsCounter.textContent = state.fps + ' FPS';
+
+  try {
+    // ── Object Detection ──
+    const predictions = await state.model.detect(video, 20, 0.45);
+    const relevant = predictions.filter(p => {
+      const idx = getClassIndex(p.class);
+      return RELEVANT.has(idx);
+    });
+
+    // ── Optical Flow Speed Estimation ──
+    estimateSpeed();
+
+    // ── Lane Detection ──
+    detectLanes();
+
+    // ── Draw ──
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    drawDetections(relevant);
+    updateStats(relevant);
+    checkAlerts(relevant);
+
+  } catch(e) { /* continue */ }
+
+  state.animFrame = requestAnimationFrame(detectLoop);
+}
+
+// ─────────────────────────────────────────────
+//  DRAW DETECTIONS
+// ─────────────────────────────────────────────
+function getClassIndex(className) {
+  const map = {
+    'person':0,'bicycle':1,'car':2,'motorcycle':3,
+    'bus':5,'truck':7,'traffic light':9,'stop sign':11,'parking meter':12
+  };
+  return map[className.toLowerCase()] ?? -1;
+}
+
+function drawDetections(preds) {
+  const scaleX = canvas.width  / (video.videoWidth  || canvas.width);
+  const scaleY = canvas.height / (video.videoHeight || canvas.height);
+
+  const newDets = [];
+
+  preds.forEach(pred => {
+    const idx  = getClassIndex(pred.class);
+    const info = CLASSES[idx] || { label: pred.class, cat:'other', color:'#fff' };
+    const [x, y, w, h] = pred.bbox;
+    const sx = x * scaleX, sy = y * scaleY;
+    const sw = w * scaleX, sh = h * scaleY;
+    const conf = Math.round(pred.score * 100);
+    const color = info.color;
+
+    // Box
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 8;
+    ctx.strokeRect(sx, sy, sw, sh);
+    ctx.shadowBlur = 0;
+
+    // Corner ticks
+    const tl = 12;
+    ctx.lineWidth = 3;
+    [[sx,sy,1,1],[sx+sw,sy,-1,1],[sx,sy+sh,1,-1],[sx+sw,sy+sh,-1,-1]].forEach(([cx,cy,dx,dy]) => {
+      ctx.beginPath();
+      ctx.moveTo(cx+dx*tl, cy);
+      ctx.lineTo(cx, cy);
+      ctx.lineTo(cx, cy+dy*tl);
+      ctx.stroke();
+    });
+
+    // Label background
+    ctx.fillStyle = color + '22';
+    const labelW = ctx.measureText(info.label).width + 50;
+    ctx.fillRect(sx, sy - 22, labelW, 22);
+
+    // Label text
+    ctx.fillStyle = color;
+    ctx.font = '11px "Share Tech Mono"';
+    ctx.fillText(`${info.label.toUpperCase()} ${conf}%`, sx + 6, sy - 6);
+
+    // Distance estimate (rough: larger bbox = closer)
+    const areaRatio = (sw * sh) / (canvas.width * canvas.height);
+    const distEst = areaRatio > 0.15 ? 'CLOSE' : areaRatio > 0.05 ? 'MED' : 'FAR';
+    ctx.fillStyle = color + 'aa';
+    ctx.font = '9px "Share Tech Mono"';
+    ctx.fillText(distEst, sx + 6, sy + sh - 6);
+
+    newDets.push({ label: info.label, conf, cat: info.cat, areaRatio });
+
+    // Traffic light color detection
+    if (info.cat === 'light') {
+      detectTrafficLightColor(sx, sy, sw, sh);
+    }
+  });
+
+  updateDetectionFeed(newDets);
+}
+
+// ─────────────────────────────────────────────
+//  TRAFFIC LIGHT COLOR
+// ─────────────────────────────────────────────
+function detectTrafficLightColor(x, y, w, h) {
+  // Sample thirds of the bounding box
+  const offscreen = document.createElement('canvas');
+  offscreen.width  = video.videoWidth;
+  offscreen.height = video.videoHeight;
+  const octx = offscreen.getContext('2d');
+  octx.drawImage(video, 0, 0);
+
+  const scaleX = video.videoWidth  / canvas.width;
+  const scaleY = video.videoHeight / canvas.height;
+
+  const zones = [
+    { name:'r', vy: y * scaleY,                   h: (h/3)*scaleY },
+    { name:'y', vy: (y+h/3)*scaleY,               h: (h/3)*scaleY },
+    { name:'g', vy: (y+(2*h/3))*scaleY,            h: (h/3)*scaleY },
+  ];
+
+  let detected = null;
+  let maxBrightness = 0;
+
+  zones.forEach(zone => {
+    try {
+      const data = octx.getImageData(x*scaleX, zone.vy, w*scaleX, zone.h);
+      let r=0, g=0, b=0, count=data.data.length/4;
+      for (let i=0;i<data.data.length;i+=4) { r+=data.data[i]; g+=data.data[i+1]; b+=data.data[i+2]; }
+      r/=count; g/=count; b/=count;
+      const brightness = Math.max(r,g,b);
+      if (brightness > maxBrightness && brightness > 80) {
+        maxBrightness = brightness;
+        if (zone.name==='r' && r>g*1.5 && r>b*1.5) detected='r';
+        else if (zone.name==='y' && r>80 && g>80 && b<80) detected='y';
+        else if (zone.name==='g' && g>r*1.2 && g>b*1.2) detected='g';
+      }
+    } catch(e) {}
+  });
+
+  setTrafficLight(detected);
+}
+
+function setTrafficLight(color) {
+  state.trafficLight = color;
+  tlR.classList.toggle('active', color === 'r');
+  tlY.classList.toggle('active', color === 'y');
+  tlG.classList.toggle('active', color === 'g');
+}
+
+// ─────────────────────────────────────────────
+//  SPEED ESTIMATION (optical flow approximation)
+// ─────────────────────────────────────────────
+let prevImageData = null;
+let frameSkip = 0;
+
+function estimateSpeed() {
+  frameSkip++;
+  if (frameSkip % 3 !== 0) return; // Every 3rd frame
+
+  const w = 80, h = 45; // Downsampled
+  const offscreen = document.createElement('canvas');
+  offscreen.width = w; offscreen.height = h;
+  const octx = offscreen.getContext('2d');
+  octx.drawImage(video, 0, 0, w, h);
+  const curr = octx.getImageData(0, 0, w, h);
+
+  if (prevImageData) {
+    let diff = 0;
+    const len = curr.data.length;
+    for (let i = 0; i < len; i += 4) {
+      const dr = curr.data[i]   - prevImageData[i];
+      const dg = curr.data[i+1] - prevImageData[i+1];
+      const db = curr.data[i+2] - prevImageData[i+2];
+      diff += Math.abs(dr) + Math.abs(dg) + Math.abs(db);
+    }
+    const avgDiff = diff / (w * h * 3);
+
+    // Map pixel motion → speed (empirical calibration)
+    const rawSpeed = avgDiff * 3.2;
+    state.motionHistory.push(rawSpeed);
+    if (state.motionHistory.length > 8) state.motionHistory.shift();
+    const smoothed = state.motionHistory.reduce((a,b)=>a+b,0) / state.motionHistory.length;
+    state.speedKmh = Math.min(Math.round(smoothed), 200);
+
+    // Update UI
+    speedVal.textContent = state.speedKmh;
+    speedVal.className = '';
+    if (state.speedKmh > 100) speedVal.classList.add('danger');
+    else if (state.speedKmh > 60) speedVal.classList.add('warn');
+  }
+
+  prevImageData = curr.data.slice();
+}
+
+// ─────────────────────────────────────────────
+//  LANE DETECTION (Hough-like edge approach)
+// ─────────────────────────────────────────────
+let laneFrameSkip = 0;
+
+function detectLanes() {
+  laneFrameSkip++;
+  if (laneFrameSkip % 4 !== 0) return;
+
+  const w = laneCanvas.width;
+  const h = laneCanvas.height;
+
+  // Sample lower half of video for lane lines
+  const offscreen = document.createElement('canvas');
+  const sw = 160, sh = 90;
+  offscreen.width = sw; offscreen.height = sh;
+  const octx = offscreen.getContext('2d');
+  // Draw only lower half
+  octx.drawImage(video, 0, video.videoHeight/2, video.videoWidth, video.videoHeight/2, 0, 0, sw, sh);
+
+  const imgData = octx.getImageData(0, 0, sw, sh);
+  const gray = new Uint8Array(sw * sh);
+
+  // Grayscale + simple edge detection (Sobel-lite)
+  for (let y = 1; y < sh-1; y++) {
+    for (let x = 1; x < sw-1; x++) {
+      const i = (y*sw+x)*4;
+      const lum = (imgData.data[i]*0.3 + imgData.data[i+1]*0.59 + imgData.data[i+2]*0.11);
+      gray[y*sw+x] = lum;
+    }
+  }
+
+  // Find bright lines (lane markings are bright)
+  laneCtx.clearRect(0, 0, w, h);
+
+  const roiTop    = h * 0.55;
+  const roiBottom = h * 0.95;
+  const cx        = w / 2;
+
+  // Simple approach: scan columns in bottom half for bright vertical edges
+  let leftLaneX  = cx - w * 0.22;
+  let rightLaneX = cx + w * 0.22;
+  let laneDetected = false;
+
+  // Sample multiple rows
+  const rows = [0.6, 0.7, 0.8, 0.9];
+  let leftPoints = [], rightPoints = [];
+
+  rows.forEach(rowFrac => {
+    const sy2 = Math.floor(rowFrac * sh);
+    const wy  = h * (0.5 + rowFrac * 0.5);
+    let leftBest = -1, leftVal = 0;
+    let rightBest = -1, rightVal = 0;
+
+    for (let x = 5; x < sw/2 - 5; x++) {
+      const val = gray[sy2*sw+x];
+      if (val > 160 && val > leftVal) { leftVal = val; leftBest = x; }
+    }
+    for (let x = sw/2 + 5; x < sw-5; x++) {
+      const val = gray[sy2*sw+x];
+      if (val > 160 && val > rightVal) { rightVal = val; rightBest = x; }
+    }
+
+    if (leftBest > 0) {
+      const wx = (leftBest / sw) * w;
+      leftPoints.push({ x: wx, y: wy });
+    }
+    if (rightBest > 0) {
+      const wx = (rightBest / sw) * w;
+      rightPoints.push({ x: wx, y: wy });
+    }
+  });
+
+  laneDetected = leftPoints.length >= 2 || rightPoints.length >= 2;
+
+  // Draw lane overlay
+  laneCtx.save();
+
+  if (leftPoints.length >= 2 || rightPoints.length >= 2) {
+    // Fill lane area
+    laneCtx.beginPath();
+    const vanishX = w/2, vanishY = h*0.52;
+
+    const lBottom = leftPoints.length  > 0 ? leftPoints[leftPoints.length-1]  : { x: cx-w*0.22, y: roiBottom };
+    const rBottom = rightPoints.length > 0 ? rightPoints[rightPoints.length-1] : { x: cx+w*0.22, y: roiBottom };
+
+    laneCtx.moveTo(vanishX, vanishY);
+    laneCtx.lineTo(rBottom.x, rBottom.y);
+    laneCtx.lineTo(lBottom.x, lBottom.y);
+    laneCtx.closePath();
+    laneCtx.fillStyle = 'rgba(0,255,136,0.07)';
+    laneCtx.fill();
+
+    // Left lane line
+    if (leftPoints.length >= 2) {
+      laneCtx.beginPath();
+      laneCtx.moveTo(vanishX, vanishY);
+      leftPoints.forEach(p => laneCtx.lineTo(p.x, p.y));
+      laneCtx.strokeStyle = 'rgba(0,255,136,0.6)';
+      laneCtx.lineWidth = 3;
+      laneCtx.shadowColor = '#00ff88';
+      laneCtx.shadowBlur = 8;
+      laneCtx.setLineDash([12, 6]);
+      laneCtx.stroke();
+    }
+
+    // Right lane line
+    if (rightPoints.length >= 2) {
+      laneCtx.beginPath();
+      laneCtx.moveTo(vanishX, vanishY);
+      rightPoints.forEach(p => laneCtx.lineTo(p.x, p.y));
+      laneCtx.strokeStyle = 'rgba(0,255,136,0.6)';
+      laneCtx.lineWidth = 3;
+      laneCtx.shadowColor = '#00ff88';
+      laneCtx.shadowBlur = 8;
+      laneCtx.setLineDash([12, 6]);
+      laneCtx.stroke();
+    }
+
+    laneCtx.setLineDash([]);
+    statLane.textContent = 'OK';
+    statLane.className   = 'stat-value';
+  } else {
+    statLane.textContent = 'N/A';
+    statLane.className   = 'stat-value';
+  }
+
+  laneCtx.restore();
+}
+
+// ─────────────────────────────────────────────
+//  UPDATE STATS
+// ─────────────────────────────────────────────
+function updateStats(preds) {
+  let vehicles = 0, persons = 0, signs = 0;
+  preds.forEach(p => {
+    const idx  = getClassIndex(p.class);
+    const info = CLASSES[idx];
+    if (!info) return;
+    if (info.cat === 'vehicle') vehicles++;
+    if (info.cat === 'person')  persons++;
+    if (info.cat === 'sign')    signs++;
+  });
+
+  statVehicles.textContent = vehicles;
+  statPersons.textContent  = persons;
+  statSigns.textContent    = signs;
+
+  statVehicles.className = 'stat-value' + (vehicles > 3 ? ' warn' : '');
+  statPersons.className  = 'stat-value' + (persons  > 0 ? ' alert' : '');
+}
+
+// ─────────────────────────────────────────────
+//  ALERT CHECK
+// ─────────────────────────────────────────────
+function checkAlerts(preds) {
+  let risk = false;
+  preds.forEach(p => {
+    const idx  = getClassIndex(p.class);
+    const info = CLASSES[idx];
+    if (!info) return;
+    const [,, w, h] = p.bbox;
+    const scaleX = canvas.width  / (video.videoWidth  || canvas.width);
+    const scaleY = canvas.height / (video.videoHeight || canvas.height);
+    const area = (w*scaleX) * (h*scaleY) / (canvas.width*canvas.height);
+    if ((info.cat==='vehicle'||info.cat==='person') && area > 0.12) risk = true;
+  });
+
+  // Also alert on red traffic light + motion
+  if (state.trafficLight === 'r' && state.speedKmh > 5) risk = true;
+
+  alertOverlay.style.display = risk ? 'block' : 'none';
+  if (risk && !state.alertActive) {
+    alertOverlay.textContent = state.trafficLight === 'r' ? '⚠ RED LIGHT' : '⚠ COLLISION RISK';
+  }
+  state.alertActive = risk;
+}
+
+// ─────────────────────────────────────────────
+//  DETECTION FEED
+// ─────────────────────────────────────────────
+let feedItems = [];
+function updateDetectionFeed(dets) {
+  // Merge with history
+  dets.forEach(d => {
+    feedItems = feedItems.filter(f => f.label !== d.label);
+    feedItems.unshift(d);
+  });
+  feedItems = feedItems.slice(0, 5);
+
+  detFeed.innerHTML = feedItems.map(d => `
+    <div class="det-item">
+      <span class="det-label">${d.label}</span>
+      <span class="det-conf ${d.cat}">${d.conf}%</span>
+    </div>
+  `).join('');
+}
+</script>
+
+</body>
+</html>
