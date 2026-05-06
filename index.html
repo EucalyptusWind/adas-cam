@@ -7,7 +7,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>ADAS Dashcam</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/tensorflow/4.15.0/tf.min.js"></script>
+<!-- TF.js + COCO-SSD versions tested on iOS Safari -->
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.2/dist/coco-ssd.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
   :root {
@@ -272,9 +274,17 @@ text-transform: uppercase;
 box-shadow: 0 0 12px rgba(0,255,136,0.15), inset 0 0 12px rgba(0,255,136,0.05);
 transition: all 0.2s;
 -webkit-tap-highlight-color: transparent;
+-webkit-appearance: none;
+border-radius: 0;
 }
 #startBtn:active { background: rgba(0,255,136,0.1); box-shadow: 0 0 20px rgba(0,255,136,0.3); }
 #startBtn.running { border-color: var(–hud-red); color: var(–hud-red); box-shadow: 0 0 12px rgba(255,51,85,0.2); }
+#startBtn:disabled {
+border-color: rgba(0,255,136,0.2);
+color: rgba(0,255,136,0.3);
+cursor: not-allowed;
+box-shadow: none;
+}
 
 #fpsCounter {
 font-size: 11px;
@@ -478,7 +488,7 @@ z-index: 9;
   <!-- Bottom bar -->
 
   <div id="bottomBar">
-    <button id="startBtn" onclick="toggleDetection()">▶ START ADAS</button>
+    <button id="startBtn" onclick="toggleDetection()" disabled>⏳ LOADING MODEL...</button>
     <div id="fpsCounter">-- FPS</div>
   </div>
 
@@ -570,65 +580,25 @@ setInterval(updateClock, 1000);
 updateClock();
 
 // ─────────────────────────────────────────────
-//  LOAD MODEL
+//  HELPERS
 // ─────────────────────────────────────────────
-async function loadModel() {
-  setLoad(5, 'LOADING TENSORFLOW...');
-  await tf.ready();
-  setLoad(20, 'FETCHING COCO-SSD MODEL...');
-  // We load COCO-SSD via CDN script, but tf.loadGraphModel is used for custom
-  // Here we use the @tensorflow-models/coco-ssd approach via CDN
-  return new Promise((resolve) => {
-    const s = document.createElement('script');
-    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/tensorflow/4.15.0/tf.min.js';
-    // Load coco-ssd from CDN
-    const s2 = document.createElement('script');
-    s2.src = 'https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js';
-    s2.onload = async () => {
-      setLoad(60, 'COMPILING MODEL...');
-      try {
-        const model = await cocoSsd.load({ base: 'mobilenet_v2' });
-        setLoad(90, 'WARMING UP...');
-        // Warm up with dummy tensor
-        const dummy = tf.zeros([1, 300, 300, 3]);
-        await model.detect(dummy);
-        dummy.dispose();
-        setLoad(100, 'SYSTEM READY');
-        resolve(model);
-      } catch(e) {
-        setLoad(100, 'MODEL LOAD ERROR - CHECK CONNECTION');
-        resolve(null);
-      }
-    };
-    s2.onerror = () => { setLoad(100,'FAILED TO LOAD MODEL'); resolve(null); };
-    document.head.appendChild(s2);
-  });
-}
-
 function setLoad(pct, msg) {
   loadFill.style.width = pct + '%';
   loadMsg.textContent = msg;
 }
 
-// ─────────────────────────────────────────────
-//  CAMERA
-// ─────────────────────────────────────────────
 async function startCamera() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: 'environment',
-        width: { ideal: 1280 },
-        height: { ideal: 720 }
-      },
+      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
       audio: false
     });
     video.srcObject = stream;
-    await new Promise(r => video.onloadedmetadata = r);
-    video.play();
+    await new Promise(r => { video.onloadedmetadata = r; });
+    await video.play();
     resizeCanvases();
   } catch(e) {
-    loadMsg.textContent = 'CAMERA ACCESS DENIED';
+    setLoad(5, 'CAMERA DENIED: ' + e.message);
   }
 }
 
@@ -642,17 +612,75 @@ function resizeCanvases() {
 window.addEventListener('resize', resizeCanvases);
 
 // ─────────────────────────────────────────────
+//  LOAD MODEL
+// ─────────────────────────────────────────────
+async function loadModel() {
+  try {
+    setLoad(20, 'STARTING TENSORFLOW...');
+
+    // Force CPU backend as fallback if WebGL fails on iOS
+    try {
+      await tf.setBackend('webgl');
+      await tf.ready();
+      setLoad(35, 'BACKEND: WebGL ✓');
+    } catch(e) {
+      setLoad(35, 'WebGL failed, trying WASM...');
+      try {
+        await tf.setBackend('wasm');
+        await tf.ready();
+      } catch(e2) {
+        await tf.setBackend('cpu');
+        await tf.ready();
+        setLoad(35, 'BACKEND: CPU');
+      }
+    }
+
+    setLoad(50, 'LOADING DETECTION MODEL...');
+    if (typeof cocoSsd === 'undefined') {
+      setLoad(100, 'ERROR: cocoSsd not found');
+      return null;
+    }
+
+    const model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
+    setLoad(85, 'WARMING UP...');
+
+    // Warm up
+    try {
+      const dummy = tf.zeros([1, 300, 300, 3]);
+      await model.detect(dummy);
+      dummy.dispose();
+    } catch(e) { /* ignore warmup error */ }
+
+    setLoad(100, 'SYSTEM READY — TAP START');
+    return model;
+  } catch(e) {
+    setLoad(100, 'ERROR: ' + e.message);
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────
 //  INIT
 // ─────────────────────────────────────────────
 async function init() {
+  setLoad(5, 'REQUESTING CAMERA...');
   await startCamera();
-  setLoad(10, 'CAMERA OK — LOADING MODEL...');
+  setLoad(15, 'CAMERA OK');
+
   state.model = await loadModel();
   state.modelLoaded = !!state.model;
 
+  if (state.modelLoaded) {
+    startBtn.disabled = false;
+    startBtn.textContent = '▶ START ADAS';
+  } else {
+    startBtn.textContent = '⚠ MODEL FAILED — RELOAD PAGE';
+  }
+
+  // Hide splash after short delay
   setTimeout(() => {
     splash.classList.add('hidden');
-  }, 600);
+  }, 800);
 }
 
 init();
